@@ -1,0 +1,620 @@
+---
+title: "Script to perform standard workflow steps to analyze single cell RNA-Seq data"
+subtitle: "Co-Op Spring 2026 Assignment"
+author: "Pretel Pretel, Natalia"
+date: "September 2025"
+output:
+  html_document:
+    df_print: paged
+    toc: true
+    toc_float: true 
+bibliography: references.bib
+knit: (function(inputFile, encoding) {
+  rmarkdown::render(inputFile, encoding = encoding, output_dir = "../report") })
+---
+
+# Install and load packages
+
+```{r Install_packages, echo = TRUE, warning = FALSE}
+# Load libraries
+library(Seurat)
+library(tidyverse)
+library(ggplot2)
+library(patchwork) 
+
+required_packages <-c(
+  "Seurat",
+  "tidyverse",
+  "ggplot2",
+  "patchwork"
+)
+
+# Install any packages not already installed
+installed_packages <- rownames(installed.packages())
+for (package in required_packages) {
+  if (!package %in% installed_packages) install.packages(package, dependencies = TRUE)
+}
+
+# Load all required packages
+invisible(lapply(required_packages, library, character.only = TRUE))
+
+```
+
+# Business Understanding
+
+## Asses Situation
+
+Single-cell RNA sequencing (scRNA-seq) has emerged as a transformative technology that measures gene expression in individual cells rather than averaging across bulk samples. As (@Yamada2020) explain, "scRNA-seq facilitates automatic classification of cells via clustering of transcriptomes and can identify heterogeneous cell types and molecular states even in a group that have been considered to consist of only one cell type."
+
+In Drosophila research, comparative genomics studies between mutant and wildtype organisms provide fundamental insights into gene function and regulatory networks. These model organism studies serve as the foundation for achieving a better understanding of analogous processes in humans, making them essential for biomedical research.
+
+## Business Objective
+
+The objective of this assignments is to develop and implement a comprehensive single-cell RNA sequencing analysis pipeline that identifies differential expressed geness between mutant and wildtype Drosophila samples. 
+
+## Data Source
+
+The dataset is single-cell RNA sequencing data from six Drosophila samples: two wildtype controls (wt1, wt2) and four mutant samples (mt1, mt2, mt3, mt4). The data is provided in standard 10X Genomics format, which contains the gene expression count matrices. These matrices have the transcriptional profiles of individual cells across experimental conditions.
+
+## Project Goals
+
+This project aims to create and implement a complete scRNA-seq analysis workflow that includes:
+
+  1. Quality Control and Preprocessing
+  2. Normalization and Feature Selection
+  3. Dimentionality Reduction
+  4. Clustering Analysis
+  5. Differential Expression Analysis
+  6. Data visualization
+
+This analysis will be performed using the Seurat R package.
+
+# Data Loading and set up
+
+First we are going to load our data and to create the Seurat objects.
+
+```{r Data_loading, echo=TRUE,warning = FALSE}
+
+# Read in the count data loading it to a Seurat object using the Read10X function from each sample
+
+wt1_data <- Read10X(data.dir = "../data/sample_scRNA_sequencing_data/wt1" )
+wt2_data <- Read10X(data.dir = "../data/sample_scRNA_sequencing_data/wt2" )
+mt1_data <- Read10X(data.dir = "../data/sample_scRNA_sequencing_data/mt1" )
+mt2_data <- Read10X(data.dir = "../data/sample_scRNA_sequencing_data/mt2" )
+mt3_data <- Read10X(data.dir = "../data/sample_scRNA_sequencing_data/mt3" )
+mt4_data <- Read10X(data.dir = "../data/sample_scRNA_sequencing_data/mt4" )
+
+# Initialize the Seurat object with the raw (non-normalized data) using the seurat CreateeuratObjects function
+
+wt1_seurat <- CreateSeuratObject(counts = wt1_data, project = "wt1", min.cells = 3, min.features = 200) # All the features expressed in at least 3 cells, and keep all the cells that at least have 200 features (Genes)
+wt2_seurat <- CreateSeuratObject(counts = wt2_data, project = "wt2", min.cells = 3, min.features = 200)
+mt1_seurat <- CreateSeuratObject(counts = mt1_data, project = "mt1", min.cells = 3, min.features = 200)
+mt2_seurat <- CreateSeuratObject(counts = mt2_data, project = "mt2", min.cells = 3, min.features = 200)
+mt3_seurat <- CreateSeuratObject(counts = mt3_data, project = "mt3", min.cells = 3, min.features = 200)
+mt4_seurat <- CreateSeuratObject(counts = mt4_data, project = "mt4", min.cells = 3, min.features = 200)
+
+str(wt1_seurat)
+
+# Include metadata for each sample
+
+wt1_seurat$condition <- "wildtype"
+wt2_seurat$condition <- "wildtype"
+mt1_seurat$condition <- "mutant"
+mt2_seurat$condition <- "mutant"
+mt3_seurat$condition <- "mutant"
+mt4_seurat$condition <- "mutant"
+
+# Merge all the samples to create an unified data set
+
+unified_df <- merge(wt1_seurat, y = c(wt2_seurat, mt1_seurat, mt2_seurat, mt3_seurat, mt4_seurat))
+
+# Check the number of cells and genes after the merging
+print(paste("Total number of cells after merging:", ncol(unified_df)))
+print(paste("Total number of genes:", nrow(unified_df)))
+```
+
+# Quality control Analysis
+
+We perform quality control to filter out the low quality cells, we are going to take into consideration the total number of features in the cells (`N_features`) and the total number of molecules (`Ncount`). This is because a poor quality cell can have a low number of genes or a low number of molecules detected, or a really high number of both, which could be due to doublets or multiple cells being sequenced together, so we need to filter out all of these cells that will affect our downstream analysis.
+
+## Mitocondrial Genes Percentage
+
+The dying or low quality cells have a higher percentage of mitochondrial genes, so we will exclude those cells that have a higher percentage.
+
+```{r mt_gene_detection, echo = TRUE,warning = FALSE}
+# Check the metadata of our df accessing the metadata slot
+head(unified_df@meta.data)
+
+# Check the presence of mitochondrial genes
+mt_genes_identification <- grep("mt|mito", rownames(unified_df), value = TRUE, ignore.case = TRUE)
+print(mt_genes_identification)
+
+# Use the function PercentageFeatureSet to calculate the percentage of the mt genes, providing the pattern that specifies the genes starting with MT
+unified_df[["percent.mt"]] <- PercentageFeatureSet(unified_df, pattern = "^mt:") 
+
+# Check that the column has been created correctly
+head(unified_df@meta.data)
+
+# Visualization using VlnPlot
+qc_violin_plot <-VlnPlot (unified_df, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0) +
+  plot_annotation(title = "Quality Control Metrics Before Filtering")
+
+ggsave("../results/figures/QC_violin_plots.png", plot = qc_violin_plot, width = 12, height = 6, dpi = 300, units = "in")
+
+print(qc_violin_plot)
+```
+What we can observe in this figure is that:
+
+-	*nFeature_RNA*: The majority of cells show 500-1.200 detected genes, and these values have consistency across the different samples.
+-	*nCounts_RNA*: The majority of cells have 1.000-5.000 total UMI counts, with similar distribution values across the samples. 
+-	*percent.mt*: Most of the cells demonstrate <5% mitochondrial content, indicating that these are healthy cells.
+
+The `Feature Scatter` function allows us to better examinate the relationship between total UMI counts (nCount_RNA) and the number of detected genes (nFeature_RNA) per cell. This correlation is important because high-quality cells typically demonstrate a positive relationship: more sequencing depth should detect more genes. 
+
+```{r scatter_plot_visualization, echo=TRUE,warning = FALSE}
+
+# Use the FeatureScatter function that allows us to plot two matrices on different axes 
+feature_scatter_plot <-FeatureScatter(unified_df, feature1 = "nCount_RNA", feature2 = "nFeature_RNA") + geom_smooth(method = "lm") + labs (title = "Correlation between UMI Counts and Gene Features") + theme_minimal()
+
+print(feature_scatter_plot)
+
+ggsave("../results/figures/QC_feature_scatter.png",  plot = feature_scatter_plot, width = 8, height = 6, dpi = 300, units = "in")
+
+```
+This scatter plot demonstrates that there is a strong positive correlation between the UMI counts and the detected genes, which is indicated by the linear regression line. This suggest that we have good data quality and sample consistency, as all the samples demonstrate a similar correlation patterns. 
+
+## Filtering low-quality data
+
+Based on the previous analysis of the data distribution, these thresholds will be used in data filtering to reduce the low-quality data:
+
+- Gene detection thresholds with a lower bound of 200 genes and upper bound of 2500 genes, removing damaged cells and potential doublets.
+- Mitochondrial content below 5%, as is a conservative threshold and most healthy cells in our data set showerd <2% mitochondrial content.
+- UMI depth greater than 500 counts, which ensures that we have sufficient sequencing depth preventing the inclusion of poorly cells that could introduce noise in the analysis.
+
+```{r filtering_step, echo = TRUE,warning = FALSE}
+
+# Filtering the subset of cells
+unified_df_filtered <- subset(unified_df, subset = nFeature_RNA > 200 & nFeature_RNA < 2500 & percent.mt < 5 & nCount_RNA > 500)
+
+# Check that the filtering has been done
+unified_df
+unified_df_filtered
+
+```
+# Data Normalization and Feature Selection
+
+## Data Normalization
+
+To compare the expression across different cells we need to normalize our data. This will corrects for differences in the sequencing depth between cells by converting the raw counts to relative expression levels, to do it we are going to apply the Log Normalize method. 
+
+```{r data_normalization, echo = TRUE,warning = FALSE}
+# Data normalization
+unified_df_normalized <- NormalizeData(unified_df_filtered, normalization.method = "LogNormalize", scale.factor = 10000)
+
+```
+
+## Feature Selection
+
+The feature selection steps will help us identify the highly variable genes that demonstrate a significant variation cell-to-cell in expression levels. This is essential to reduce the dimensionality of the data while preserving their biological importance. 
+
+```{r feature_selection, echo = TRUE,warning = FALSE}
+
+# Identification of highly variable features
+unified_df_normalized <- FindVariableFeatures(unified_df_normalized, selection.method = "vst", nfeatures = 2000 )
+
+# Selection of the top 10 most highly variable features
+top10_variable_features <- head(VariableFeatures(unified_df_normalized),10)
+
+# Plot the variable features with and without labels
+plot1_vf <- VariableFeaturePlot(unified_df_normalized)
+variable_features_labeled <- LabelPoints(plot = plot1_vf, points = top10_variable_features, repel = TRUE)
+variable_features_final_plot <- variable_features_labeled + 
+  labs(title = "Highly Variable Features", subtitle = "Top 10 most variable genes labeled", x = "Average Expression", y = "Standardized Variance") +
+  theme_minimal()
+
+# Print the final labeled plot
+print(variable_features_final_plot)
+
+# Save the plot
+ggsave("../results/figures/variable_features_labeled.png",  plot = variable_features_final_plot,width = 10, height = 8, dpi = 300, units = "in")
+
+
+```
+
+This plot demonstrates the relationship between the average gene expression (x-axis) and standardized variance (y-axis), and what we can observe is that:
+
+- The 2.000 genes displayed in red were identified as the highly variable genes.
+- The ten top variable genes are specifically labeled.
+
+The clear reparation between the variable and non-variable genes confirms that the method chosen for their identification has suscessfully identify the biologically relevant genes.
+
+# Data Scaling and Principal Component Analysis (PCA)
+
+## Data Scaling
+
+In single cell RNA data there are many unwanted sources of variation, and this could be due to technical noise or due to biological sources such as different cell cycle of the cells. This is why we want to account for these sources of variation, so that we can make sure that all genes get fair treatment in our analysis, so our cells won´t cluster due to these variations, they will cluster based on biological similarity or a biological effect. Scaling does this by standardizing each gene's expression.
+
+```{r scaling_data, echo = TRUE, warning = FALSE}
+
+# Select all the genes in our data set
+all_genes <-rownames(unified_df_normalized)
+
+# Use the scaledata function to perfom the data scaling
+unified_df_scaled <- ScaleData(unified_df_normalized, features = all_genes)
+
+```
+
+## Perform Linear Dimensionality Reduction (PCA) 
+
+Now we will perform *Principal Component Analysis*, which is a linear dimensionality reductino technique that will take our 2.000 highly variable genes and creates new variables, which are the principal components, that capture the most important patterns of variations in our data.
+
+```{r PCA_analysis, echo = TRUE, warning = FALSE}
+
+# Perform Linear Dimensionality Reduction (PCA) 
+unified_df_scaled <- RunPCA(unified_df_scaled, features = VariableFeatures(object= unified_df_scaled))
+
+# Visualize PCA results
+print(unified_df_scaled[["pca"]], dim = 1:5, nfeatures=5) #Only top 5 features
+
+# Plot a heatmap to identify which PCA components 
+pca_heatmap <-DimHeatmap(unified_df_scaled, dims = 1:6, cells = 500, balanced = TRUE, ncol=3)
+
+# Print the heatmap
+print(pca_heatmap)
+
+# Save PCA heatmap
+ggsave("../results/figures/PCA_heatmap.png",   plot = pca_heatmap, width = 15,height = 10, dpi = 300, units = "in")
+
+```
+
+These heatmaps helps us identify which genes contribute the most to the different components that have been created. What we can say about these is that:
+
+- Theyellow (high) and purple (low) patterns indicate that these principal components are identifying biological cariation.
+- These first 6 PCs appear to capture and demonstrate different biological processes.
+- Focusing on the first principal component (PC_1), it clearly separates two major cell populations based on metabolic (AkhR,Egfr, Lsd-2) versus neuronal (multiple nAChr subuint, Cadps, Rim) gene expression signatures, indicating successful identification of distinct cell types in the dataset.
+
+## Data dimensionality
+
+When determining the dimensionality of the data, we need to decide how many principal components to include in downstream analysis. This is becase we want to use only those statistically significant components that capture the majority of the differences, and avoid the noise from less informative components. To do this we are going to use the elbow plot, which shows the standard deviation explained by each principal component.
+
+```{r data_dimensionality, echo = TRUE,warning = FALSE}
+
+# Determine the dimensionality of the data using an elbow plot
+
+elbow_plot <- ElbowPlot(unified_df_scaled, ndims = 20) +labs(title = "PCA Elbow Plot",subtitle = "Determining optimal number of PCs for downstream analysis", 
+      x = "Principal Components", y = "Standard Deviation") + theme_minimal()
+
+# Print the elbow plot
+print(elbow_plot)
+
+# Save elbow plot
+ggsave("../results/figures/PCA_elbow_plot.png", plot = elbow_plot, width = 10, height = 6, dpi = 300, units = "in")
+
+```
+
+This elbow plot is showing the standard deviation that is captured by each principal component, ranked from highest to lowest. To decide the principal components (PC) that we are going to use in our downstream analysis we're looking for the 'elbow point', the point where the curve begins to flatten and the additional PCs influence less in the percentage of the variance explained. 
+
+The plot shows a clear elbow around PC 8-10, where the standard deviation drops significantly, this is why I only selected the 10 principal components for downstream analysis, as it captures the major sources of variations before this elbow and ensures that we mantain potentially important differences between the cell types. 
+
+# Clustering Analysis
+
+The next step is to perform the clustering analysis, where we divide cells into groups based on which cells have similar gene expression patterns, using the most informative (variable) genes to make those comparisons. These cells that cluster together normally represents the same cell type and state, and similar responses to experimental conditions.
+
+We are going to test different resolution values, that range from 0.1 to 1, in order to find the optimal balance between the identification of a genuine cell population and avoiding over-clustering that could differentiate cells that are biologically similar.
+
+```{r clustering_analysis, echo = TRUE,warning = FALSE}
+
+# Find neighbors cells
+unified_df_neighbours <-FindNeighbors(unified_df_scaled, dims = 1:10)
+
+# Understanding the clusters resolution and group similar cells together
+unified_df_clusters <- FindClusters(unified_df_neighbours, resolution = c(0.1, 0.3, 0.5, 0.7,1))
+
+# Visualizing the different clusters
+# Create comparison plots for different resolutions
+resolution_plots <- list()
+resolutions <- c(0.1, 0.3, 0.5, 0.7, 1)
+
+for(i in seq_along(resolutions)) {
+  res <- resolutions[i]
+  plot_name <- paste0("RNA_snn_res.", res)
+  
+  resolution_plots[[i]] <- DimPlot(unified_df_clusters, 
+                                   group.by = plot_name, 
+                                   label = TRUE,
+                                   label.size = 4) + 
+    labs(title = paste(" Specific Resolution", res),
+         subtitle = paste(length(unique(unified_df_clusters@meta.data[[plot_name]])), "clusters")) +
+    theme_minimal() +
+    theme(legend.position = "none") }
+
+# Combine all resolution plots
+resolution_comparison <- wrap_plots(resolution_plots, ncol = 3)
+resolution_comparison <- resolution_comparison + 
+  plot_annotation(title = "Comparison of clustering Resolutions")
+
+# Save the resolution comparison
+ggsave("../results/figures/clustering_resolutions_comparison.png",  plot = resolution_comparison,  width = 15,  height = 10,  dpi = 300, units = "in")
+
+print(resolution_comparison)
+
+```
+What we can observe from the different resolutions is that:
+
+- The resolution 0.1 shows well-separated cells populations, and it captures the majority of the cell lineages.
+- The resolution 0.3 to 0.5 subdivides the populations into smaller and more specific groups.
+- The resolution 0.5 to 1 shows a progressive subdivision of the populations, wich becomes a risk of over-clustering.
+
+Based on these results the resolution selected is the 0.1, as it demonstrates a clear reparation and it has biological relevance as it is composed by 10 different clusters, which will make it easier for the identification of major cell types.
+
+## Non-Linear Dimensionality Reduction (UAMP)
+
+After the PCA analysis, our data still exists in high-dimensional space, which is 10 dimensions from the first 10 principal components, which makes impossible to visualize it. This is why we applied the non-linear dimensional reduction technique UMAP (Uniform Manifold Approximation and Projection). This technique will reduce the 10-dimensional PCA space down to 2 dimensions for an optimal visualization, while maintaining the local neighborhood relationships of the cells. 
+
+```{r UAMP_reduction, echo = TRUE,warning = FALSE}
+
+# Non-linear dimensionality reduction
+unified_df_clusters_UMAP <-RunUMAP(unified_df_clusters, dims = 1:10)
+
+
+# Visualization of the UMAP clusters and different conditions
+clusters_plot <- DimPlot(unified_df_clusters_UMAP, reduction = "umap", group.by = "RNA_snn_res.0.1", label = TRUE,
+                         label.size = 5, label.color = "white") + labs(title = "Cell Clusters") + theme_minimal()
+conditions_plot <- DimPlot(unified_df_clusters_UMAP, reduction = "umap", group.by = "condition",cols = c("wildtype" = "blue", "mutant" = "red")) +
+  labs(title = "Experimental Conditions") +
+  theme_minimal()
+origin_plot <- DimPlot(unified_df_clusters_UMAP, reduction = "umap", group.by = "orig.ident") + labs(title = "Sample Origin") + theme_minimal() 
+
+umap_comparison <- clusters_plot + conditions_plot + origin_plot +
+  plot_layout(ncol = 3) +
+  plot_annotation(
+    title = "Non-Linear Dimensionality Reduction (UMAP) Analysis"
+  )
+
+ggsave("../results/figures/UMAP_comparison_three_panel.png", 
+       plot = umap_comparison, 
+       width = 18, height = 6, dpi = 300, units = "in")
+
+print(umap_comparison)
+
+
+```
+
+Here we can observe:
+
+- *The cell clusters*, demonstrates 10 different clusters with clear separation, where three majors clusters (0,1 and 2) dominate.
+- *The Experimental conditions*, demonstrates that both wildtype and mutant cells are mixed in all of the clusters, although is important to note that some clusters demonstrate enrichment for a specific condition.
+- *The Sample Origin*, demonstrates that all the samples contribute to the multiple clusters, and that we have a balanced representation from wildtype and mutant samples. 
+
+# Differential Expression Analysis (DEA)
+
+The next step is differential expression analysis (DEA), this is the process of "identifying genes that have a significant difference in expression between two or more groups, we can use different tools for differential gene expression analysis, depending on the underlying statistics" (@CCR_Seurat_DE_Classification_2021_online). In our case, we're comparing mutant versus wildtype cells to understand how the genetic mutation affects gene expression patterns.
+
+```{r DEA_analysis, echo = TRUE,warning = FALSE}
+
+# We are going to set the identity of the cells based on the condition 
+Idents(unified_df_clusters_UMAP) <- "condition"
+
+# Join the data layers
+unified_df_clusters_UMAP <- JoinLayers(unified_df_clusters_UMAP)
+
+# Use the FindMarkers function to determine the differentially expressed genes
+de_genes <- FindMarkers(unified_df_clusters_UMAP, ident.1 = "mutant", ident.2 = "wildtype", test.use = "wilcox", min.pct = 0.1, logfc.threshold = 0.25)
+
+# Check the results
+head(de_genes, 10)
+
+# Save the results into a csv file
+write.csv(de_genes, "../results/tables/DEG_Mutant_vs_WildType.csv", row.names = TRUE)
+
+```
+
+What we can observe in these results is that *the top differentially expressed genes demonstrate a consistent downregulation in mutant cells* with values of log2FC:-1.16 to -3.15), which affects the inmmune response (Jon99Cii, LysD), structural proteins (Cp36, Cp19, Cp15) and stress response (Hsp26, Hsp70Bc). Based on these results, this reduced expression in the mutant cells suggest that the mutation is disrupting the normal gene expression programs.
+
+# Cluster Specific - DEA
+
+The inclusion of a cluster-specific differential expression analysis demonstrates a critical improvement of scRNA-seq in comparison with bulk comparison, as different cell types could respond in an opposite way to the same mutation. An example of this is that, if a mutation upregulate stress genes in one cell type and downregulate the neural genes in another, if we analyze them together, these opposite effects will cancel each other out, masking important specific responses of a cell type.
+
+This is why in this analysis we subset cells that belonged to each cluster, and then compare the mutant versus the wildtype in those specific cell populations, to compare them in similar cellular context. Moreover, I decided to choose the cluster 0 to do it as it contains the largest number of cells and it showed clear separation in the UMAP analysis.
+
+```{r Cluster_specific_DEA, echo = TRUE,warning = FALSE}
+
+# Select the identity of the cells based on the cluster
+Idents(unified_df_clusters_UMAP) <- "seurat_clusters"
+
+# Create the subset of cells that belongs to cluster 0
+cluster_0_cells <- subset(unified_df_clusters_UMAP, idents = "0")
+
+# Select set the identity of the cells based on the condition 
+Idents(cluster_0_cells) <- "condition"
+
+# Identification of differential expressed genes withing cluster 0
+cluster_0_deg <- FindMarkers(cluster_0_cells,ident.1 = "mutant", ident.2 = "wildtype", test.use = "wilcox", min.pct = 0.1, logfc.threshold = 0.25)
+
+# Check the results
+head(cluster_0_deg, 10)
+
+# Save the results into a csv file
+write.csv(cluster_0_deg, "../results/tables/Cluster_0_DEG_Mutant_vs_WildType.csv",row.names = TRUE)
+
+# Overall top 5 DE genes 
+top5_overall <- head(de_genes[de_genes$p_val_adj < 0.05 & de_genes$avg_log2FC < 0, ], 5)
+
+# Cluster 0 top 5 DE genes  
+top5_cluster0 <- head(cluster_0_deg[cluster_0_deg$p_val_adj < 0.05 & cluster_0_deg$avg_log2FC < 0, ], 5)
+
+# Create simple comparison table
+if(nrow(top5_overall) >= 5 & nrow(top5_cluster0) >= 5) {
+  comparison_table <- data.frame(
+    Rank = 1:5,
+    Overall_Gene = rownames(top5_overall)[1:5],
+    Overall_LogFC = round(top5_overall$avg_log2FC[1:5], 2),
+    Cluster0_Gene = rownames(top5_cluster0)[1:5],
+    Cluster0_LogFC = round(top5_cluster0$avg_log2FC[1:5], 2)
+  )
+  
+  print(comparison_table)
+} else {
+  print("Not enough genes for comparison table")
+}
+
+```
+
+This comparison demonstrates why cluster-specific analysis is valuable in scRNA-seq. While both analyses show overlapping genes like Jon99Cii and LysD, cluster 0 reveals that there are unique patterns, specifically the  the -5.95 fold downregulation of Hsp70Bc. This severe reduction suggests  that the cells that belongs to cluster 0 have a diferent response to the mutation,which is a possible indicator of an altered protein. 
+
+# Data Visualization
+
+## Volcano Plots
+
+The volcano plots will be used to visualize the differential expression results. 
+
+```{r volcano_plots, echo = TRUE,warning = FALSE}
+
+# Include the gene names and significance labels for plotting
+de_genes$gene <- rownames(de_genes)
+de_genes$st.significant <- ifelse(de_genes$p_val_adj < 0.05 & abs(de_genes$avg_log2FC) > 0.5, "Statistically Significant", "Statistically Not Significant")
+
+# Create Volcano Plot for Visualization
+volcano_plot <- ggplot(de_genes, aes(x = avg_log2FC, y = -log10(p_val_adj), color = st.significant)) + geom_point(alpha = 0.6) + theme_minimal() +
+  labs( title = "Volcano Plot: Mutant vs Wildtype",
+        x = "Log2 Fold Change",
+        y = "-log10(Adjusted P-value)") +
+        geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+        geom_vline(xintercept = c(-0.5,0.5), linetype = "dashed")
+
+ggsave("../results/figures/volcano_plot.png", 
+       plot = volcano_plot, 
+       width = 10, height = 8, dpi = 300, units = "in")
+
+print(volcano_plot)
+
+
+
+```
+This volcano plots is demonstrating te differential expression between mutant and wildtype cells, where in th e horizontal dashed line we can observe the significante threshold (p < 0.05) and the vertical line demonstrating the +- 0.5 log2FC cutoffs. The distribution is demonstrating that there is a clear downregulation, as more genes presents negative fold changes (left) than positive ones. This confirms that the mutation is primarly supressing the gene expression rather than activating new pathways.
+
+## Feature Plot
+
+The FeaturePlot is going to maps the specific gene expression level to the UMAP coordinates, which will create individual plots for each gene of interest. The dots in the graph represents a single cells positioned following the UMAP coordinates and the color is an indicator of the expression level of the gene in that cell. This visualization will help us to determine:
+
+- Which cells types normally express each gene.
+- Which cell types demonstrate the strongest downregulation effects.
+- If the expression changes are uniform across all the cell population or if they are restricted to a specific cluster.
+
+```{r Fold_plots, echo = TRUE,warning = FALSE}
+
+# Select the top upregulated and downregulates genes to plot
+top_upregulated_genes <- head(de_genes[de_genes$avg_log2FC > 0 & de_genes$p_val_adj < 0.05, ], 5)
+top_downregulated_genes <- head(de_genes[de_genes$avg_log2FC < 0 & de_genes$p_val_adj < 0.05, ], 5)
+
+# Determine the actual fold changes to better understand expresion
+print("Upregulated genes:")
+print(top_upregulated_genes[,c("avg_log2FC", "p_val_adj")])
+print("Downregulated genes:")  
+print(top_downregulated_genes[,c("avg_log2FC", "p_val_adj")])
+
+# Feature plots showing expression of top genes split by condition
+if(nrow(top_upregulated_genes) > 0 & nrow(top_downregulated_genes) > 0) {
+  feature_plots <- FeaturePlot(unified_df_clusters_UMAP, features = c(rownames(top_upregulated_genes)[1:2], rownames(top_downregulated_genes)[1:2]), 
+              split.by = "condition", ncol = 2) + plot_annotation(title = "Top Differentially Expressed Genes by Condition")
+  
+  ggsave("../results/figures/feature_plots_top_genes.png", 
+         plot = feature_plots, 
+         width = 12, height = 10, dpi = 300, units = "in")
+  
+  print(feature_plots)
+}
+
+```
+
+From these FeaturePlots we can observe a *dual regulatory effect of the mutation* that demonstrate:
+
+- Downregulated genes (Jon99Cii, LysD) that demonstrate stronger expression in mutant cells.
+- Upregulated genes (Cp36, CG12374) that demonstrate stronger expression in wildtype cells.
+
+Further analyzing these genes we can observe that the upregulated genes are immune response factors, which suggest that *the mutation suppress the immune response* whereas the downregulated genes are structural proteins, suggesting that there is a supression of functions related to maintenance in the cells. 
+
+## Violin Plot
+
+The Violin plot is going to show the distribution of gene expression levels across different groups with three key features:
+
+-	The width represents the density, how many cells have that expression level.
+-	The height represents the range of expression values, the taller the broader expression range.
+-	The shape is the distribution pattern, the smooth curve shows expression patterns.
+
+```{r Violin_plot, echo = TRUE,warning = FALSE}
+
+# Violin plots showing cluster-specific expression patterns
+violin_deg_plot <-VlnPlot(unified_df_clusters_UMAP, 
+        features = c("CG4291", "Jon99Cii"), 
+        split.by = "condition", 
+        group.by = "seurat_clusters",
+        pt.size = 0) + 
+  plot_annotation(title = "Expression Patterns of Key DE Genes by Cluster and Condition") +  
+  theme(legend.position = "bottom", 
+        legend.title = element_text(size = 12),legend.text = element_text(size = 10))
+
+ggsave("../results/figures/violin_plots_key_genes.png", 
+       plot = violin_deg_plot, 
+       width = 12, height = 8, dpi = 300, units = "in")
+
+print(violin_deg_plot)
+```
+
+These plots demonstrate cluster-specific expression patterns for both genes.
+
+- *CG4291* shows minimal expression across the majority of the clusters in both conditions. Nevertheless is important to point out that the clusters 0,2 and 8 have a slight upregulation in mutants (red) comparedd to wildtype (blue).
+- *Jon99Cii* shows a robust expression in the wildtype cells (blue) across the majority of the clusters, and the mutant cells shows a significant reduced expression across all the clusters, which represents a clear downregulation in the mutation.
+
+# Data Summary
+
+```{r summary_data, echo = TRUE,warning = FALSE}
+
+# Store the sesion info for future reproductibility
+writeLines(capture.output(sessionInfo()), "../environment/sessionInfo.txt")
+
+# Include a summary of the datasets
+print(paste("Final dataset has: ", ncol(unified_df_clusters_UMAP), " cells, and ", nrow(unified_df_clusters_UMAP), " genes."))
+print(paste("The number of clusters identified is:", length(unique(unified_df_clusters_UMAP$RNA_snn_res.0.1))))
+print(paste("The number of significant differentially expressed genes (overall) is:", sum(de_genes$p_val_adj < 0.05)))
+print(paste("The number of Significant differentially expressed genes (cluster 0):", sum(cluster_0_deg$p_val_adj < 0.05)))
+cat("Top 5 upregulated genes:", paste(head(rownames(top_upregulated_genes), 5), collapse = ", "), "\n")
+cat("Top 5 downregulated genes:", paste(head(rownames(top_downregulated_genes), 5), collapse = ", "), "\n")
+
+# Clusters cells composition and comparison between mutant and wildtype
+cluster_composition_table <- unified_df_clusters_UMAP@meta.data %>%
+  group_by(seurat_clusters, condition) %>%
+  summarise(n_cells = n(), .groups = "drop") %>%
+  pivot_wider(names_from = condition, values_from = n_cells, values_fill = 0) %>%
+  mutate(total_cells = wildtype + mutant,
+         pct_wildtype = round(wildtype/total_cells * 100, 1),
+         pct_mutant = round(mutant/total_cells * 100, 1))
+
+# Write the information into a CSV file
+write.csv(cluster_composition_table, "../results/tables/cluster_composition_by_condition.csv", row.names = FALSE)
+
+# Save the seurat object
+saveRDS(unified_df_clusters_UMAP, file = "../results/final_seurat.rds")
+
+cat("=== The analysis has finished succesfully ====")
+
+```
+# Conclusions
+
+Based on the results that we have obtained from the sequencing analysis, some of the conclusions that we could draw from them are:
+
+ - *The mutation result in a dysregulation of the gene expression.* As we have seen in the results, the mutation significantly downregulated genes, as we obtained negative log2FC values that ranged from -1.16 to -3.15. These results suggest that that this mutation is disrupting the normal gene expression and not activating new pathways.
+ 
+ - *The cell heterogeneity was mantained despite the mutation*. We identified 10 different cell clusters that demonstrate a clear separation in the UMAP space, and we could observe that both cell types (mutant and wildtype) contribute to the different clusters. This also suggest that the mutation doesn´t eliminate any specific cell type.
+ 
+ - *The pathways that are disrupted include the inmune and stress response*. This is noticeable as the key downregulated genes include immune respone factors (Jon99Cii, LysD) and also proteins involved in the stress response (Hsp26, Hsp70Bc)
+ 
+Regarding the *biological implications* of this analysis, what we can observe is that this mutation can compromise the stress response mechanisms of the cells. Nevertheless, as the cell type diversity is mantained even through the mutated cells, this suggest that this mutation is not affecting the early developmental programs of the organism.
+
+This single-cell RNA sequencing analysis has reveal us that the mutation that we have studied is causing a downregulation of the genes that are involved in the immune response, and also in the stress response and the structural maintenance. In addition to this, the cell-type specific analysis is demonstrate that the different population of cells are affected differently by the mutation, as some clusters have a severe disruption of the protein, such as the Hsp70BC protein. These findings offer important insights about the molecular mechanisms of the mutant phenotype. 
+
+
+
+
+
+
