@@ -1,12 +1,9 @@
-# scRNA-seq-seurat-analysis
-Comprehensive scRNA-seq analysis workflow in R using Seurat package: quality control, normalization, dimensionality reduction, clustering, and differential expression analysis
 
 # Single-Cell RNA-seq Analysis of Mutant vs Wildtype Drosophila
-##Date: September 2025
 
 ## Description
 
-This projects analyzes single-cell RNA sequencing data from mutant and wildtype Drosophila samples in order to perform a differential expression analysis to identify differential gene expression patterns and cellular responses related to genetic mutation. 
+This project analyzes single-cell RNA sequencing data from mutant and wild-type Drosophila samples in order to perform a differential expression analysis to identify differential gene expression patterns and cellular responses related to genetic mutation. 
 
 ## Getting Started
 
@@ -24,8 +21,8 @@ This projects analyzes single-cell RNA sequencing data from mutant and wildtype 
 ### Executing program
 
 * Open `scRNA_analysis.Rmd` in RStudio.
-* Run all the code chuncks sequentially or knit to HTML.
-* Results will be generated in `results/` folder.
+* Run all the code chunks sequentially or knit to HTML.
+* Results will be generated in the `results/` folder.
 * The expected runtime is ~10 minutes, and it will display the message `=== The analysis has finished succesfully ====` when finished. 
 
 ## Key results
