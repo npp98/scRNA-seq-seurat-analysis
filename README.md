@@ -1,6 +1,7 @@
 
 # Single-Cell RNA-seq Analysis of Mutant vs Wildtype Drosophila
 
+
 ## Description
 
 This project analyzes single-cell RNA sequencing data from mutant and wild-type Drosophila samples in order to perform a differential expression analysis to identify differential gene expression patterns and cellular responses related to genetic mutation. 
@@ -41,7 +42,7 @@ pretel.n@northeastern.edu
 ## Version History
 
 * 0.1
-    * Initial Release
+    * Initial Release.
 
 ## Files Generated
 
